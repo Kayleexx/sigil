@@ -1,17 +1,15 @@
 use nix::errno::Errno;
-use nix::unistd::{close, execvp, read};
+use nix::unistd::{execvp, read};
+use std::os::fd::OwnedFd;
 use std::ffi::CString;
-use std::os::unix::io::BorrowedFd;
 
-pub fn bootstrap(sync_fd: i32, args: &[String]) -> nix::Result<()> {
-    let fd = unsafe { BorrowedFd::borrow_raw(sync_fd) };
-
+pub fn bootstrap(sync_fd: OwnedFd, args: &[String]) -> nix::Result<()> {
     let mut buf = [0u8; 1];
-    let n = read(fd, &mut buf)?;
+    let n = read(&sync_fd, &mut buf)?;
     if n == 0 {
         return Err(Errno::EPIPE);
     }
-    close(sync_fd)?;
+    drop(sync_fd);
 
     let c_args: Vec<std::ffi::CString> = args
         .iter()

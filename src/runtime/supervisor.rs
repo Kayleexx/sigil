@@ -2,8 +2,7 @@ use crate::runtime::{child, signals};
 use nix::errno::Errno;
 use nix::sys::signal::Signal;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
-use nix::unistd::{close, fork, pipe, setpgid, write, ForkResult, Pid};
-use std::os::unix::io::{AsRawFd, BorrowedFd};
+use nix::unistd::{fork, pipe, setpgid, write, ForkResult, Pid};
 use std::process::exit;
 
 pub fn spawn(args: Vec<String>) -> nix::Result<i32> {
@@ -11,30 +10,23 @@ pub fn spawn(args: Vec<String>) -> nix::Result<i32> {
 
     let (reader, writer) = pipe()?;
 
-    let r_fd = reader.as_raw_fd();
-    let w_fd = writer.as_raw_fd();
-
     match unsafe { fork()? } {
         ForkResult::Parent { child: child_pid } => {
-            close(r_fd)?;
+            drop(reader);
 
             // Parent assigns child to its own process group before releasing it.
             setpgid(child_pid, child_pid)?;
 
-            let borrowed_writer = unsafe { BorrowedFd::borrow_raw(w_fd) };
-            write(borrowed_writer, &[0u8; 1])?;
+            write(&writer, &[0u8; 1])?;
 
-            close(w_fd)?;
+            drop(writer);
 
             supervisor_loop(child_pid)
         }
         ForkResult::Child => {
-            if let Err(err) = close(w_fd) {
-                eprintln!("child close(w_fd) failed: {}", err);
-                exit(1);
-            }
+            drop(writer);
 
-            if let Err(err) = child::bootstrap(r_fd, &args) {
+            if let Err(err) = child::bootstrap(reader, &args) {
                 eprintln!("child bootstrap failed: {}", err);
             }
 
