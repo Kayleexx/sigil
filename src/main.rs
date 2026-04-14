@@ -1,4 +1,5 @@
 mod error;
+mod isolation;
 mod runtime;
 
 fn main() {

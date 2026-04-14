@@ -1,3 +1,4 @@
+use crate::isolation;
 use nix::errno::Errno;
 use nix::unistd::{execvp, read};
 use std::os::fd::OwnedFd;
@@ -10,6 +11,8 @@ pub fn bootstrap(sync_fd: OwnedFd, args: &[String]) -> nix::Result<()> {
         return Err(Errno::EPIPE);
     }
     drop(sync_fd);
+
+    isolation::namespaces::setup_uts_namespace()?;
 
     let c_args: Vec<std::ffi::CString> = args
         .iter()
