@@ -1,13 +1,17 @@
 use crate::config::ContainerConfig;
 use nix::errno::Errno;
+use nix::unistd::getpid;
+use std::thread;
+use std::time::Duration;
 use std::fs::{File, create_dir_all, read_to_string, remove_dir, write};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
+const CGROUP_ATTACH_RETRY_LIMIT: usize = 10;
+const CGROUP_ATTACH_RETRY_DELAY: Duration = Duration::from_millis(2);
 static HOST_CGROUP_ROOT: Mutex<Option<File>> = Mutex::new(None);
-static HOST_PID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
 pub struct CgroupHandle {
     parent_dir: PathBuf,
@@ -19,9 +23,6 @@ pub fn capture_host_context() -> nix::Result<()> {
     if guard.is_none() {
         *guard = Some(File::open(CGROUP_ROOT).map_err(io_err)?);
     }
-    drop(guard);
-
-    HOST_PID.store(read_host_pid()?, std::sync::atomic::Ordering::SeqCst);
     Ok(())
 }
 
@@ -36,7 +37,7 @@ pub fn setup_cgroups(config: &ContainerConfig) -> nix::Result<CgroupHandle> {
     let container_dir = sigil_root.join(&config.cgroup_name);
     create_dir_all(&container_dir).map_err(io_err)?;
     write(container_dir.join("memory.max"), &config.memory_max).map_err(io_err)?;
-    write(container_dir.join("cgroup.procs"), format!("{}\n", host_pid()?)).map_err(io_err)?;
+    attach_pid_to_cgroup(&container_dir.join("cgroup.procs"))?;
 
     Ok(CgroupHandle {
         parent_dir: sigil_root,
@@ -46,14 +47,35 @@ pub fn setup_cgroups(config: &ContainerConfig) -> nix::Result<CgroupHandle> {
 
 impl CgroupHandle {
     pub fn cleanup(&self) -> nix::Result<()> {
-        let pid = format!("{}\n", host_pid()?);
-        write(self.parent_dir.join("cgroup.procs"), pid).map_err(io_err)?;
+        attach_pid_to_cgroup(&self.parent_dir.join("cgroup.procs"))?;
         match remove_dir(&self.container_dir) {
             Ok(()) => Ok(()),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(err) => Err(io_err(err)),
         }
     }
+}
+
+fn attach_pid_to_cgroup(cgroup_procs: &Path) -> nix::Result<()> {
+    let pid = getpid().as_raw();
+    eprintln!(
+        "setup_cgroups: attaching namespace pid {} to {}",
+        pid,
+        cgroup_procs.display()
+    );
+
+    let pid = format!("{}\n", pid);
+    for attempt in 0..CGROUP_ATTACH_RETRY_LIMIT {
+        match write(cgroup_procs, &pid) {
+            Ok(()) => return Ok(()),
+            Err(err) if err.raw_os_error() == Some(nix::libc::ESRCH) && attempt + 1 < CGROUP_ATTACH_RETRY_LIMIT => {
+                thread::sleep(CGROUP_ATTACH_RETRY_DELAY);
+            }
+            Err(err) => return Err(io_err(err)),
+        }
+    }
+
+    Err(Errno::ESRCH)
 }
 
 fn enable_memory_controller(path: &Path) -> nix::Result<()> {
@@ -76,29 +98,6 @@ fn host_cgroup_root() -> nix::Result<PathBuf> {
     let guard = HOST_CGROUP_ROOT.lock().map_err(|_| Errno::EIO)?;
     let root = guard.as_ref().ok_or(Errno::EINVAL)?;
     Ok(PathBuf::from(format!("/proc/self/fd/{}", root.as_raw_fd())))
-}
-
-fn read_host_pid() -> nix::Result<i32> {
-    let status = read_to_string("/proc/self/status").map_err(io_err)?;
-    let line = status
-        .lines()
-        .find(|line| line.starts_with("NSpid:"))
-        .ok_or(Errno::EINVAL)?;
-    let pid = line
-        .split_whitespace()
-        .nth(1)
-        .ok_or(Errno::EINVAL)?
-        .parse::<i32>()
-        .map_err(|_| Errno::EINVAL)?;
-    Ok(pid)
-}
-
-fn host_pid() -> nix::Result<i32> {
-    let pid = HOST_PID.load(std::sync::atomic::Ordering::SeqCst);
-    if pid <= 0 {
-        return Err(Errno::EINVAL);
-    }
-    Ok(pid)
 }
 
 fn io_err(err: std::io::Error) -> Errno {

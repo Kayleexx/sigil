@@ -1,20 +1,20 @@
 use nix::sys::signal::{self, SaFlags, SigAction, SigHandler, SigSet, Signal};
 use std::convert::TryFrom;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 pub enum SignalEvent {
-    Terminate,
+    Forward(Signal),
     Reap,
 }
 
-static GOT_TERMINATION: AtomicBool = AtomicBool::new(false);
+static FORWARDED_SIGNAL: AtomicI32 = AtomicI32::new(0);
 static GOT_CHILD_EVENT: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn signal_handler(sig: i32) {
     if let Ok(signal) = Signal::try_from(sig) {
         match signal {
             Signal::SIGINT | Signal::SIGTERM | Signal::SIGQUIT | Signal::SIGHUP => {
-                GOT_TERMINATION.store(true, Ordering::SeqCst);
+                FORWARDED_SIGNAL.store(sig, Ordering::SeqCst);
             }
             Signal::SIGCHLD => {
                 GOT_CHILD_EVENT.store(true, Ordering::SeqCst);
@@ -55,8 +55,9 @@ pub fn install() {
 }
 
 pub fn check_signals() -> Option<SignalEvent> {
-    if GOT_TERMINATION.swap(false, Ordering::SeqCst) {
-        return Some(SignalEvent::Terminate);
+    let signal = FORWARDED_SIGNAL.swap(0, Ordering::SeqCst);
+    if signal != 0 {
+        return Signal::try_from(signal).ok().map(SignalEvent::Forward);
     }
 
     if GOT_CHILD_EVENT.swap(false, Ordering::SeqCst) {
@@ -65,4 +66,3 @@ pub fn check_signals() -> Option<SignalEvent> {
 
     None
 }
-
