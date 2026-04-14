@@ -1,4 +1,5 @@
 use crate::{
+    config::ContainerConfig,
     isolation,
     runtime::{child, signals},
 };
@@ -10,7 +11,7 @@ use nix::unistd::{pipe, setpgid, write, Pid};
 
 const CHILD_STACK_SIZE: usize = 1024 * 1024;
 
-pub fn spawn(args: Vec<String>) -> nix::Result<i32> {
+pub fn spawn(config: ContainerConfig) -> nix::Result<i32> {
     signals::install();
 
     let (reader, writer) = pipe()?;
@@ -21,7 +22,7 @@ pub fn spawn(args: Vec<String>) -> nix::Result<i32> {
     let clone_flags = isolation::namespaces::clone_flags();
     let mut child_reader = Some(reader);
     let mut child_writer = Some(child_writer);
-    let mut child_args = Some(args);
+    let mut child_config = Some(config);
 
     let child_pid = unsafe {
         clone(
@@ -30,11 +31,11 @@ pub fn spawn(args: Vec<String>) -> nix::Result<i32> {
                 let reader = child_reader
                     .take()
                     .expect("clone callback invoked without child reader");
-                let args = child_args
+                let config = child_config
                     .take()
-                    .expect("clone callback invoked without child args");
+                    .expect("clone callback invoked without child config");
 
-                if let Err(err) = child::bootstrap(reader, &args) {
+                if let Err(err) = child::bootstrap(reader, &config) {
                     eprintln!("child bootstrap failed: {}", err);
                 }
 
