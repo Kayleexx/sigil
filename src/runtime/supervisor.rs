@@ -8,8 +8,12 @@ use nix::sched::clone;
 use nix::sys::signal::Signal;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::{pipe, setpgid, write, Pid};
+use std::thread;
+use std::time::Duration;
 
 const CHILD_STACK_SIZE: usize = 1024 * 1024;
+const SETPGID_RETRY_LIMIT: usize = 10;
+const SETPGID_RETRY_DELAY: Duration = Duration::from_millis(1);
 
 pub fn spawn(config: ContainerConfig) -> nix::Result<i32> {
     signals::install();
@@ -48,13 +52,27 @@ pub fn spawn(config: ContainerConfig) -> nix::Result<i32> {
     };
 
     // Parent assigns child to its own process group before releasing it.
-    setpgid(child_pid, child_pid)?;
+    setpgid_when_ready(child_pid)?;
 
     write(&writer, &[0u8; 1])?;
 
     drop(writer);
 
     supervisor_loop(child_pid)
+}
+
+fn setpgid_when_ready(child_pid: Pid) -> nix::Result<()> {
+    for attempt in 0..SETPGID_RETRY_LIMIT {
+        match setpgid(child_pid, child_pid) {
+            Ok(()) => return Ok(()),
+            Err(Errno::ESRCH) if attempt + 1 < SETPGID_RETRY_LIMIT => {
+                thread::sleep(SETPGID_RETRY_DELAY);
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    Err(Errno::ESRCH)
 }
 
 fn supervisor_loop(child_pid: Pid) -> nix::Result<i32> {
