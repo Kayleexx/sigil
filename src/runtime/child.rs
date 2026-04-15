@@ -127,9 +127,7 @@ fn setup_controlling_terminal(slave: OwnedFd) -> nix::Result<()> {
 fn init_loop(main_child: Pid) -> nix::Result<i32> {
     loop {
         if let Some(signal) = take_pending_signal()? {
-            terminate_namespace()?;
-            reap_all_children()?;
-            return Ok(128 + signal as i32);
+            shutdown_namespace(signal)?;
         }
 
         match waitpid(Pid::from_raw(-1), None) {
@@ -150,6 +148,12 @@ fn init_loop(main_child: Pid) -> nix::Result<i32> {
             Err(err) => return Err(err),
         }
     }
+}
+
+fn shutdown_namespace(_signal: Signal) -> nix::Result<()> {
+    terminate_namespace()?;
+    reap_all_children()?;
+    exit(0);
 }
 
 fn install_init_signal_handlers() -> nix::Result<()> {
