@@ -125,33 +125,28 @@ fn setup_controlling_terminal(slave: OwnedFd) -> nix::Result<()> {
 }
 
 fn init_loop(main_child: Pid) -> nix::Result<i32> {
-    let mut shutdown_signal = None;
-
     loop {
-        if shutdown_signal.is_none() {
-            if let Some(signal) = take_pending_signal()? {
-                shutdown_signal = Some(signal);
-                terminate_namespace()?;
-            }
+        if let Some(signal) = take_pending_signal()? {
+            terminate_namespace()?;
+            reap_all_children()?;
+            return Ok(128 + signal as i32);
         }
 
         match waitpid(Pid::from_raw(-1), None) {
             Ok(WaitStatus::Exited(pid, status)) => {
-                if pid == main_child && shutdown_signal.is_none() {
+                if pid == main_child {
                     return Ok(status);
                 }
             }
             Ok(WaitStatus::Signaled(pid, sig, _)) => {
-                if pid == main_child && shutdown_signal.is_none() {
+                if pid == main_child {
                     return Ok(128 + sig as i32);
                 }
             }
             Ok(WaitStatus::StillAlive) => {}
             Ok(_) => {}
             Err(Errno::EINTR) => continue,
-            Err(Errno::ECHILD) => {
-                return Ok(shutdown_signal.map_or(0, |signal| 128 + signal as i32));
-            }
+            Err(Errno::ECHILD) => return Ok(0),
             Err(err) => return Err(err),
         }
     }
@@ -187,6 +182,17 @@ fn terminate_namespace() -> nix::Result<()> {
     match signal::kill(Pid::from_raw(-1), Signal::SIGTERM) {
         Ok(()) | Err(Errno::ESRCH) => Ok(()),
         Err(err) => Err(err),
+    }
+}
+
+fn reap_all_children() -> nix::Result<()> {
+    loop {
+        match waitpid(Pid::from_raw(-1), None) {
+            Ok(_) => continue,
+            Err(Errno::EINTR) => continue,
+            Err(Errno::ECHILD) => return Ok(()),
+            Err(err) => return Err(err),
+        }
     }
 }
 
