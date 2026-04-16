@@ -4,6 +4,9 @@ Sigil is a low-level container runtime written in Rust. It implements process su
 
 The goal of this project is to understand and build the core primitives behind tools like Docker and runc rather than treating them as black boxes.
 
+<img width="965" height="708" alt="image" src="https://github.com/user-attachments/assets/6521dfa2-cf7e-48c1-a0a9-5f1d35238086" />
+
+
 ---
 
 ## Features
